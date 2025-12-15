@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Limpiar Storage - P2P Pay</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 15px 30px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        .info {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .success {
+            background: #2a5a2a;
+            color: #90ee90;
+        }
+        .error {
+            background: #5a2a2a;
+            color: #ee9090;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔧 Limpiar Storage - P2P Pay</h1>
+    
+    <div class="info">
+        <p>Este script limpiará el localStorage del navegador para forzar que la aplicación cargue la información del contrato actualizada.</p>
+    </div>
+    
+    <button onclick="clearStorage()">Limpiar localStorage</button>
+    <button onclick="checkStorage()">Verificar Storage</button>
+    <button onclick="window.location.href='app.html'">Ir a la App</button>
+    
+    <div id="result"></div>
+    
+    <script>
+        function clearStorage() {
+            try {
+                localStorage.removeItem('p2ppay_contract_info');
+                const result = document.getElementById('result');
+                result.className = 'info success';
+                result.innerHTML = '<h3>✅ Storage limpiado</h3><p>El localStorage ha sido limpiado. Ahora recarga la aplicación.</p>';
+            } catch (e) {
+                const result = document.getElementById('result');
+                result.className = 'info error';
+                result.innerHTML = '<h3>❌ Error</h3><p>' + e.message + '</p>';
+            }
+        }
+        
+        function checkStorage() {
+            try {
+                const contractInfo = localStorage.getItem('p2ppay_contract_info');
+                const result = document.getElementById('result');
+                result.className = 'info';
+                if (contractInfo) {
+                    const parsed = JSON.parse(contractInfo);
+                    result.innerHTML = '<h3>📋 Storage actual:</h3><pre>' + JSON.stringify(parsed, null, 2) + '</pre>';
+                } else {
+                    result.innerHTML = '<h3>📋 Storage vacío</h3><p>No hay información del contrato guardada.</p>';
+                }
+            } catch (e) {
+                const result = document.getElementById('result');
+                result.className = 'info error';
+                result.innerHTML = '<h3>❌ Error</h3><p>' + e.message + '</p>';
+            }
+        }
+        
+        // Verificar al cargar
+        window.addEventListener('load', checkStorage);
+    </script>
+</body>
+</html>

@@ -1,0 +1,1086 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>P2P Pay Demo</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 2rem; }
+      .container { max-width: 600px; margin: 0 auto; }
+      .card { border: 1px solid #ddd; padding: 1rem; margin-bottom: 1rem; border-radius: 6px; }
+      label { display:block; margin-top: .5rem; }
+      input[type=text], input[type=number] { width:100%; padding:.4rem; }
+      button { margin-top: .5rem; padding: .5rem 1rem; }
+      #status { margin-top: 1rem; color: green; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>P2P Pay Demo</h1>
+
+      <div class="card">
+        <button id="btnConnect">Conectar MetaMask</button>
+        <div id="account"></div>
+        <div id="accountSelectorContainer" style="display: none; margin-top: 1rem;">
+          <label>Cambiar cuenta de MetaMask:</label>
+          <select id="accountSelect" style="width: 100%; padding: 0.5rem; margin-top: 0.5rem;">
+            <option value="">Cargando cuentas...</option>
+          </select>
+          <div id="accountInfo" style="margin-top: 0.5rem; font-size: 0.9em; color: #666;"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Enviar pago</h3>
+        <label>Payee (address)</label>
+        <input id="payee" type="text" placeholder="0x..." />
+        <label>Amount (ETH)</label>
+        <input id="amount" type="text" placeholder="0.1" />
+        <label>Reference</label>
+        <input id="ref" type="text" placeholder="invoice1" />
+        <button id="btnPay">Enviar pago</button>
+      </div>
+
+      <div class="card">
+        <h3>Retirar fondos</h3>
+        <label>Cuenta (address)</label>
+        <input id="withdrawAddress" type="text" readonly />
+        <button id="btnWithdraw">Retirar (mi cuenta)</button>
+        <button id="btnRefresh">Actualizar balance</button>
+        <label><input type="checkbox" id="useLocalRpc" /> Usar RPC local (solo lectura)</label>
+        <div id="providerInfo"></div>
+        <div id="balance"></div>
+      </div>
+
+      <div class="card">
+        <h3>Fundar Wallet del Proyecto</h3>
+        <label>Project Wallet (address)</label>
+        <input id="projectWallet" type="text" placeholder="0x... (dirección del proyecto)" />
+        <label>Amount (ETH)</label>
+        <input id="projectAmount" type="text" placeholder="1.0" />
+        <label>Reference</label>
+        <input id="projectRef" type="text" placeholder="funding" />
+        <button id="btnFundProject">Fundar Wallet del Proyecto</button>
+        <div style="margin-top: .75rem;">
+          <label>Fund from Ganache (server)</label>
+          <input id="fundFromGanacheAmount" type="text" placeholder="Amount ETH (default 1)" />
+          <button id="btnFundFromGanache">Fundear mi cuenta (Ganache)</button>
+          <div id="fundServerInfo" style="color: #a00; margin-top: .5rem;"></div>
+          <small style="display:block;color:#666">Inicia el servidor en la carpeta del proyecto: <code>npm run fund-server</code></small>
+        </div>
+      </div>
+
+      <div id="status"></div>
+      <div class="card" id="metamaskHelp" style="display:none">
+        <h3>Cómo conectar MetaMask</h3>
+        <ol>
+          <li>Instala MetaMask: <a href="https://metamask.io/download" target="_blank">https://metamask.io/download</a></li>
+          <li>Añade una red personalizada (Ganache):<br>RPC: <code>http://127.0.0.1:8546</code> — ChainID: <code>1337</code></li>
+          <li>Importa una cuenta desde Ganache (PrivKey) o crea una nueva en MetaMask.</li>
+          <li>Abre la UI en un navegador que soporte extensiones (evita el navegador integrado de VSCode): <code>http://127.0.0.1:8080</code></li>
+          <li>Haz click en <b>Conectar MetaMask</b> y acepta la conexión.</li>
+        </ol>
+        <p style="color: #a00">Nota: no pegues claves privadas de cuentas de red principal. Sólo usa cuentas de pruebas.</p>
+      </div>
+      <div class="card">
+        <h3>Contrato desplegado</h3>
+        <div id="contractInfo"></div>
+      </div>
+    </div>
+    <!-- Use ethers v5 UMD to provide global `ethers` in the browser -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
+    <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+    <script src="metamask_p2p.js?v=2"></script>
+    <script>
+      const btnConnect = document.getElementById('btnConnect')
+      const accountDiv = document.getElementById('account')
+      const btnPay = document.getElementById('btnPay')
+      const btnWithdraw = document.getElementById('btnWithdraw')
+      const btnRefresh = document.getElementById('btnRefresh')
+      const payeeInput = document.getElementById('payee')
+      const amountInput = document.getElementById('amount')
+      const refInput = document.getElementById('ref')
+      const withdrawAddressInput = document.getElementById('withdrawAddress')
+      const projectWalletInput = document.getElementById('projectWallet')
+      const projectAmountInput = document.getElementById('projectAmount')
+      const projectRefInput = document.getElementById('projectRef')
+      const btnFundProject = document.getElementById('btnFundProject')
+      const btnFundFromGanache = document.getElementById('btnFundFromGanache')
+      const fundFromGanacheAmountInput = document.getElementById('fundFromGanacheAmount')
+      const balanceDiv = document.getElementById('balance')
+      const statusDiv = document.getElementById('status')
+      const contractInfoDiv = document.getElementById('contractInfo')
+
+      async function loadContractInfo() {
+        try {
+          const res = await fetch('/p2ppay.json')
+          const info = await res.json()
+          contractInfoDiv.innerText = `Contrato: ${info.address} (networkId: ${info.networkId})`
+          // pre-fill project wallet with value from artifact or fallback to contract address
+          try { document.getElementById('projectWallet').value = info.projectWallet || info.address } catch (e) {}
+        } catch (err) {
+          contractInfoDiv.innerText = `No se pudo leer p2ppay.json: ${err.message}`
+        }
+      }
+
+      async function checkFundServer() {
+        const base = 'http://127.0.0.1'
+        const start = 3001
+        const end = 3012
+        let found = null
+        let lastError = null
+        
+        for (let p = start; p <= end; p++) {
+          try {
+            const url = `${base}:${p}/health`
+            // Agregar timeout y mejor manejo de errores
+            const controller = new AbortController()
+            const timeoutId = setTimeout(() => controller.abort(), 2000) // 2 segundos timeout
+            
+            try {
+              const res = await fetch(url, {
+                method: 'GET',
+                mode: 'cors',
+                signal: controller.signal
+              })
+              clearTimeout(timeoutId)
+              
+              if (!res.ok) {
+                lastError = `HTTP ${res.status}`
+                continue
+              }
+              
+              const json = await res.json().catch((e) => {
+                lastError = 'Invalid JSON response'
+                return null
+              })
+              
+              if (json && json.ok) {
+                found = p
+                break
+              } else if (json) {
+                lastError = json.error || 'Server returned ok: false'
+              }
+            } catch (fetchErr) {
+              clearTimeout(timeoutId)
+              if (fetchErr.name === 'AbortError') {
+                lastError = 'Connection timeout'
+              } else {
+                lastError = fetchErr.message || 'Network error'
+              }
+              continue
+            }
+          } catch (e) {
+            lastError = e.message || 'Unknown error'
+            continue
+          }
+        }
+        
+        const btn = document.getElementById('btnFundFromGanache')
+        const info = document.getElementById('fundServerInfo')
+        
+        if (found) {
+          window.fundServerBase = `http://127.0.0.1:${found}`
+          if (btn) btn.disabled = false
+          if (info) {
+            info.style.color = 'green'
+            info.innerText = `✓ Fund server activo en http://127.0.0.1:${found}`
+          }
+          return true
+        } else {
+          if (btn) btn.disabled = true
+          if (info) {
+            info.style.color = '#a00'
+            const errorMsg = lastError ? ` (Error: ${lastError})` : ''
+            info.innerText = `Fund server no está activo. Inicia con 'npm run fund-server'.${errorMsg}`
+          }
+          return false
+        }
+      }
+      
+      // Verificar periódicamente el estado del fund-server (cada 5 segundos)
+      let fundServerCheckInterval = null
+      function startFundServerPolling() {
+        // Verificar inmediatamente
+        checkFundServer()
+        // Luego verificar cada 5 segundos
+        if (fundServerCheckInterval) clearInterval(fundServerCheckInterval)
+        fundServerCheckInterval = setInterval(checkFundServer, 5000)
+      }
+      
+      function stopFundServerPolling() {
+        if (fundServerCheckInterval) {
+          clearInterval(fundServerCheckInterval)
+          fundServerCheckInterval = null
+        }
+      }
+
+      async function loadAccounts() {
+        const accountSelect = document.getElementById('accountSelect')
+        const accountSelectorContainer = document.getElementById('accountSelectorContainer')
+        
+        try {
+          // Obtener cuentas de MetaMask
+          let metamaskAccounts = []
+          try {
+            metamaskAccounts = await P2P.getAllAccounts()
+          } catch (e) {
+            console.warn('Could not get MetaMask accounts:', e)
+          }
+          
+          // Obtener cuentas de Ganache desde el RPC local
+          let ganacheAccounts = []
+          let ganacheError = null
+          
+          // PRIORIDAD 1: Intentar obtener cuentas del fund-server (más confiable y sin problemas de CORS)
+          // Primero verificar si ya detectamos el fund-server, si no, intentar detectarlo
+          let fundServerBase = window.fundServerBase
+          if (!fundServerBase) {
+            // Intentar detectar el fund-server primero
+            console.log('🔍 Fund-server base no detectado, buscando...')
+            const detected = await checkFundServer()
+            if (detected) {
+              fundServerBase = window.fundServerBase
+              console.log('✅ Fund-server detectado en:', fundServerBase)
+            } else {
+              // Si no se detectó, usar el puerto por defecto
+              fundServerBase = 'http://127.0.0.1:3001'
+              console.log('⚠️ Usando puerto por defecto:', fundServerBase)
+            }
+          }
+          
+          try {
+            const controller = new AbortController()
+            const timeoutId = setTimeout(() => controller.abort(), 3000) // 3 segundos timeout
+            
+            console.log('📡 Intentando obtener cuentas de:', `${fundServerBase}/accounts`)
+            const res = await fetch(`${fundServerBase}/accounts`, {
+              method: 'GET',
+              mode: 'cors',
+              credentials: 'omit',
+              headers: {
+                'Accept': 'application/json',
+              },
+              signal: controller.signal
+            })
+            clearTimeout(timeoutId)
+            
+            if (res.ok) {
+              const data = await res.json()
+              console.log('📦 Respuesta del fund-server:', data)
+              if (data.ok && data.accounts && Array.isArray(data.accounts)) {
+                ganacheAccounts = data.accounts.map(acc => {
+                  // Manejar tanto objetos como strings
+                  return typeof acc === 'string' ? acc : (acc.address || acc)
+                })
+                console.log('✅ Got Ganache accounts from fund-server:', ganacheAccounts.length, ganacheAccounts)
+              } else {
+                console.warn('⚠️ Respuesta del fund-server no tiene formato esperado:', data)
+              }
+            } else {
+              console.warn('⚠️ Fund-server responded with status:', res.status)
+              const errorText = await res.text().catch(() => '')
+              console.warn('⚠️ Error response:', errorText)
+            }
+          } catch (e) {
+            if (e.name === 'AbortError') {
+              console.warn('⚠️ Fund-server request timeout')
+              ganacheError = 'Timeout'
+            } else if (e.message && e.message.includes('Failed to fetch')) {
+              // Error común: bloqueador de anuncios o CORS
+              console.error('❌ ERROR: Petición bloqueada por el navegador (ERR_BLOCKED_BY_CLIENT)')
+              console.error('💡 SOLUCIÓN: Desactiva bloqueadores de anuncios para localhost o usa otro navegador')
+              console.error('   - En Brave: Configuración > Privacidad > Shields > Desactivar para este sitio')
+              console.error('   - O usa Chrome/Firefox sin bloqueadores')
+              ganacheError = 'Bloqueado por navegador/bloqueador'
+            } else {
+              console.warn('⚠️ Fund-server not available:', e.message)
+              ganacheError = e.message
+            }
+          }
+          
+          // PRIORIDAD 2: Si el fund-server no funcionó, intentar RPC directo (puede fallar por CORS/bloqueadores)
+          // NOTA: El RPC directo puede fallar por bloqueadores de anuncios o CORS, por eso el fund-server es preferido
+          if (ganacheAccounts.length === 0) {
+            console.info('ℹ️ Fund-server no disponible, intentando RPC directo (puede fallar por CORS)...')
+            const ports = [8546, 7545, 8545]
+            let rpcAttempted = false
+            
+            for (const port of ports) {
+              try {
+                rpcAttempted = true
+                const provider = new ethers.providers.JsonRpcProvider(`http://127.0.0.1:${port}`)
+                // Usar un timeout corto para evitar esperas largas
+                const accounts = await Promise.race([
+                  provider.send('eth_accounts', []),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 2000))
+                ])
+                
+                if (accounts && Array.isArray(accounts) && accounts.length > 0) {
+                  ganacheAccounts = accounts
+                  console.log(`✅ Got Ganache accounts from RPC port ${port}:`, accounts.length)
+                  break
+                }
+              } catch (err) {
+                // Ignorar errores silenciosamente - el RPC directo puede fallar por muchas razones
+                // (CORS, bloqueadores, Ganache no disponible, etc.)
+                if (port === 8546 && err.message && !err.message.includes('timeout')) {
+                  // Solo loggear errores no-timeout del puerto principal para debugging
+                  console.debug(`⚠️ RPC directo falló en puerto ${port}:`, err.message)
+                }
+                continue
+              }
+            }
+            
+            if (rpcAttempted && ganacheAccounts.length === 0) {
+              console.info('ℹ️ RPC directo no disponible (normal si hay bloqueadores o CORS)')
+            }
+          }
+          
+          // Si no se obtuvieron cuentas, mostrar mensaje informativo
+          if (ganacheAccounts.length === 0) {
+            console.warn('⚠️ No se pudieron obtener cuentas de Ganache.')
+            if (ganacheError && ganacheError.includes('Bloqueado')) {
+              console.error('❌ PROBLEMA: El navegador está bloqueando las peticiones a localhost')
+              console.error('💡 SOLUCIONES:')
+              console.error('   1. Desactiva bloqueadores de anuncios para localhost')
+              console.error('   2. En Brave: Configuración > Shields > Desactivar para 127.0.0.1')
+              console.error('   3. O usa Chrome/Firefox sin bloqueadores')
+              console.error('   4. Verifica que el fund-server esté corriendo: npm run fund-server')
+            } else {
+              console.warn('   💡 Solución recomendada: Inicia el fund-server con: npm run fund-server')
+              console.warn('   Esto evitará problemas de CORS y bloqueadores.')
+              if (ganacheError && !ganacheError.includes('timeout')) {
+                console.warn('   Error del fund-server:', ganacheError)
+              }
+            }
+          }
+          
+          // Combinar todas las cuentas (eliminar duplicados)
+          const allAccounts = [...new Set([...metamaskAccounts, ...ganacheAccounts])]
+          
+          if (allAccounts.length > 0) {
+            accountSelect.innerHTML = ''
+            
+            // Agregar cuentas de MetaMask primero (si hay)
+            if (metamaskAccounts.length > 0) {
+              const optgroupMetaMask = document.createElement('optgroup')
+              optgroupMetaMask.label = 'MetaMask'
+              metamaskAccounts.forEach((acc) => {
+                const option = document.createElement('option')
+                option.value = acc
+                const isGanache = ganacheAccounts.includes(acc)
+                option.textContent = `${acc.substring(0, 6)}...${acc.substring(acc.length - 4)}${isGanache ? ' (también en Ganache)' : ''}`
+                optgroupMetaMask.appendChild(option)
+              })
+              accountSelect.appendChild(optgroupMetaMask)
+            }
+            
+            // Agregar cuentas de Ganache que no están en MetaMask
+            const ganacheOnly = ganacheAccounts.filter(acc => !metamaskAccounts.includes(acc))
+            if (ganacheOnly.length > 0) {
+              const optgroupGanache = document.createElement('optgroup')
+              optgroupGanache.label = 'Ganache (RPC Local)'
+              ganacheOnly.forEach((acc) => {
+                const option = document.createElement('option')
+                option.value = acc
+                option.textContent = `${acc.substring(0, 6)}...${acc.substring(acc.length - 4)}`
+                optgroupGanache.appendChild(option)
+              })
+              accountSelect.appendChild(optgroupGanache)
+            }
+            
+            // Seleccionar la cuenta actual (solo si MetaMask está conectado)
+            let currentAddress = null
+            try {
+              if (window.ethereum && metamaskAccounts.length > 0) {
+                currentAddress = await P2P.getCurrentSigner().getAddress().catch(() => null)
+              }
+            } catch (e) {
+              // MetaMask no está conectado, usar la primera cuenta disponible
+              console.debug('MetaMask no conectado, usando primera cuenta disponible')
+            }
+            
+            if (currentAddress && allAccounts.includes(currentAddress)) {
+              accountSelect.value = currentAddress
+            } else if (allAccounts.length > 0) {
+              accountSelect.value = allAccounts[0]
+            }
+            
+            accountSelectorContainer.style.display = 'block'
+            updateAccountInfo()
+            
+            // Log para debugging
+            console.log('✅ Accounts loaded successfully:', {
+              metamask: metamaskAccounts.length,
+              ganache: ganacheAccounts.length,
+              ganacheOnly: ganacheOnly.length,
+              total: allAccounts.length,
+              ganacheAccounts: ganacheAccounts
+            })
+          } else {
+            accountSelectorContainer.style.display = 'none'
+            console.warn('⚠️ No accounts found - MetaMask:', metamaskAccounts.length, 'Ganache:', ganacheAccounts.length)
+          }
+        } catch (err) {
+          console.error('❌ Error loading accounts:', err)
+          console.error('Error details:', {
+            message: err.message,
+            stack: err.stack,
+            name: err.name
+          })
+          accountSelectorContainer.style.display = 'none'
+          // Mostrar mensaje de error al usuario si es posible
+          if (accountSelectorContainer && accountSelect) {
+            accountSelectorContainer.style.display = 'block'
+            accountSelect.innerHTML = `<option value="">Error al cargar cuentas: ${err.message}</option>`
+          }
+        }
+      }
+      
+      async function updateAccountInfo() {
+        const accountSelect = document.getElementById('accountSelect')
+        const accountInfo = document.getElementById('accountInfo')
+        const selectedAddress = accountSelect.value
+        
+        if (selectedAddress) {
+          accountInfo.innerHTML = `<strong>Cuenta seleccionada:</strong> ${selectedAddress}`
+        } else {
+          accountInfo.innerHTML = ''
+        }
+      }
+      
+      async function switchToAccount(address) {
+        try {
+          if (!address) {
+            throw new Error('No se proporcionó una dirección')
+          }
+          
+          // Verificar si la cuenta es de MetaMask o Ganache
+          let metamaskAccounts = []
+          try {
+            metamaskAccounts = await P2P.getAllAccounts()
+          } catch (e) {
+            // Ignorar error - puede que MetaMask no esté disponible
+            console.debug('No se pudieron obtener cuentas de MetaMask:', e)
+          }
+          
+          const isMetaMaskAccount = metamaskAccounts.includes(address)
+          
+          if (isMetaMaskAccount) {
+            // Es una cuenta de MetaMask, usar switchAccount
+            try {
+              await P2P.switchAccount(address)
+              console.log('✅ Cuenta de MetaMask cambiada a:', address)
+            } catch (e) {
+              console.warn('Error al cambiar cuenta en MetaMask, intentando conectar:', e)
+              // Si falla, intentar conectar primero
+              await P2P.connectWallet()
+            }
+          } else {
+            // Es una cuenta de Ganache, usar RPC local directamente
+            console.log('🔄 Cambiando a cuenta de Ganache:', address)
+            // Intentar conectar a Ganache en múltiples puertos
+            const rpcPorts = [8546, 7545, 8545]
+            let providerCreated = false
+            
+            for (const port of rpcPorts) {
+              try {
+                const provider = new ethers.providers.JsonRpcProvider(`http://127.0.0.1:${port}`)
+                // Verificar que el RPC responda
+                await Promise.race([
+                  provider.getBlockNumber(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
+                ])
+                window.currentGanacheAccount = address
+                window.currentGanacheProvider = provider
+                providerCreated = true
+                console.log(`✅ RPC local conectado en puerto ${port} para cuenta Ganache`)
+                break
+              } catch (e) {
+                console.debug(`⚠️ RPC en puerto ${port} no disponible para Ganache`)
+                continue
+              }
+            }
+            
+            if (!providerCreated) {
+              throw new Error('No se pudo conectar a Ganache. Verifica que esté corriendo.')
+            }
+          }
+          
+          // Actualizar la UI con la nueva cuenta
+          await updateAccount()
+          statusDiv.style.color = 'green'
+          statusDiv.innerText = `Cuenta cambiada a: ${address.substring(0, 6)}...${address.substring(address.length - 4)}`
+        } catch (err) {
+          console.error('Error al cambiar cuenta:', err)
+          statusDiv.style.color = 'red'
+          statusDiv.innerText = `Error al cambiar cuenta: ${err.message}`
+        }
+      }
+      
+      async function updateAccount() {
+        try {
+          // Obtener la cuenta seleccionada del selector primero
+          const accountSelect = document.getElementById('accountSelect')
+          let address = accountSelect ? accountSelect.value : null
+          
+          // Si hay una cuenta de Ganache guardada, usarla
+          if (!address && window.currentGanacheAccount) {
+            address = window.currentGanacheAccount
+            if (accountSelect) {
+              accountSelect.value = address
+            }
+          }
+          
+          // Si no hay cuenta seleccionada, intentar obtener de MetaMask
+          if (!address) {
+            try {
+              if (window.ethereum && P2P && P2P.getCurrentSigner) {
+                const signer = P2P.getCurrentSigner()
+                address = await signer.getAddress()
+              }
+            } catch (e) {
+              // No hay cuenta conectada, intentar conectar MetaMask
+              if (window.ethereum && P2P) {
+                try {
+                  const { signer } = await P2P.connectWallet()
+                  address = await signer.getAddress()
+                } catch (connectErr) {
+                  console.debug('No se pudo conectar MetaMask:', connectErr)
+                }
+              }
+            }
+          }
+          
+          // Si aún no hay cuenta, intentar obtener de Ganache
+          if (!address) {
+            try {
+              // Intentar obtener del fund-server
+              const fundServerBase = window.fundServerBase || 'http://127.0.0.1:3001'
+              const res = await fetch(`${fundServerBase}/accounts`).catch(() => null)
+              if (res && res.ok) {
+                const data = await res.json()
+                if (data.ok && data.accounts && data.accounts.length > 0) {
+                  // Obtener la primera cuenta (puede ser objeto o string)
+                  const firstAccount = data.accounts[0]
+                  address = typeof firstAccount === 'string' ? firstAccount : (firstAccount.address || firstAccount)
+                  if (accountSelect) {
+                    accountSelect.value = address
+                  }
+                }
+              }
+            } catch (e) {
+              // Intentar RPC directo
+              try {
+                const provider = new ethers.providers.JsonRpcProvider('http://127.0.0.1:8546')
+                const ganacheAccounts = await Promise.race([
+                  provider.send('eth_accounts', []),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 2000))
+                ])
+                if (ganacheAccounts && ganacheAccounts.length > 0) {
+                  address = ganacheAccounts[0]
+                  if (accountSelect) {
+                    accountSelect.value = address
+                  }
+                }
+              } catch (err) {
+                console.debug('No se pudo obtener cuenta de Ganache:', err)
+              }
+            }
+          }
+          
+          if (!address) {
+            throw new Error('No se pudo obtener una cuenta. Conecta MetaMask o asegúrate de que Ganache esté corriendo.')
+          }
+          
+          // Cargar todas las cuentas disponibles para actualizar el selector
+          await loadAccounts()
+          
+          // Asegurar que la cuenta seleccionada esté en el selector
+          if (accountSelect && address) {
+            accountSelect.value = address
+            updateAccountInfo()
+          }
+          
+          // Verificar si es cuenta de MetaMask o Ganache
+          let metamaskAccounts = []
+          try {
+            if (P2P && P2P.getAllAccounts) {
+              metamaskAccounts = await P2P.getAllAccounts()
+            }
+          } catch (e) {
+            // Ignorar - puede que MetaMask no esté disponible
+            console.debug('No se pudieron obtener cuentas de MetaMask:', e)
+          }
+          
+          const isMetaMaskAccount = metamaskAccounts.includes(address)
+          
+          if (isMetaMaskAccount) {
+            // Asegurar que esta cuenta esté seleccionada en MetaMask
+            try {
+              if (P2P && P2P.switchAccount) {
+                await P2P.switchAccount(address)
+              }
+            } catch (e) {
+              // Si falla, intentar conectar
+              if (P2P && P2P.connectWallet) {
+                await P2P.connectWallet()
+              }
+            }
+          }
+          
+          accountDiv.innerText = `Cuenta: ${address.substring(0, 6)}...${address.substring(address.length - 4)} ${isMetaMaskAccount ? '(MetaMask)' : '(Ganache RPC)'}`
+          withdrawAddressInput.value = address
+          
+          // Actualizar balance
+          const bal = await refreshBalance(address)
+          // disable withdraw button if balance is zero or if it's a Ganache-only account (needs MetaMask for signing)
+          if (bal && bal.eq && bal.eq(0)) {
+            btnWithdraw.disabled = true
+          } else if (!isMetaMaskAccount) {
+            // Para cuentas de Ganache, necesitamos MetaMask para firmar
+            btnWithdraw.disabled = true
+            statusDiv.style.color = 'orange'
+            statusDiv.innerText = 'Nota: Para realizar transacciones con esta cuenta de Ganache, impórtala primero en MetaMask usando su clave privada.'
+          } else {
+            btnWithdraw.disabled = false
+            if (statusDiv.innerText.includes('Nota:')) {
+              statusDiv.innerText = ''
+            }
+          }
+        } catch (err) {
+          console.error('Error en updateAccount:', err)
+          accountDiv.innerText = `No conectado: ${err.message}`
+          const accountSelectorContainer = document.getElementById('accountSelectorContainer')
+          if (accountSelectorContainer) {
+            accountSelectorContainer.style.display = 'none'
+          }
+          if (err.message && err.message.includes('MetaMask not found')) {
+            statusDiv.style.color = 'orange'
+            statusDiv.innerText = 'MetaMask no está instalado. Puedes usar cuentas de Ganache directamente desde el RPC local.'
+          } else {
+            statusDiv.style.color = 'red'
+            statusDiv.innerText = `Error: ${err.message}`
+          }
+        }
+      }
+
+      async function refreshBalance(address) {
+        try {
+          if (!address) {
+            throw new Error('No se proporcionó una dirección para consultar el balance')
+          }
+          
+          const res = await fetch('/p2ppay.json')
+          const info = await res.json()
+          let provider
+          let useLocal = document.getElementById('useLocalRpc').checked
+          
+          // Determinar qué provider usar
+          if (!useLocal && window.ethereum) {
+            try {
+              provider = new ethers.providers.Web3Provider(window.ethereum)
+              // Verificar que MetaMask esté conectado a la red correcta
+              const network = await provider.getNetwork()
+              console.log('🌐 MetaMask network:', network.chainId)
+            } catch (e) {
+              console.warn('Error al crear provider de MetaMask, usando RPC local:', e)
+              // Si falla, intentar usar RPC local
+              useLocal = true
+              provider = null
+            }
+          }
+          
+          // Si se debe usar RPC local o si MetaMask falló
+          if (useLocal || !provider) {
+            // Usar RPC local - intentar múltiples puertos si es necesario
+            const rpcPorts = [8546, 7545, 8545]
+            let providerCreated = false
+            
+            for (const port of rpcPorts) {
+              try {
+                const testProvider = new ethers.providers.JsonRpcProvider(`http://127.0.0.1:${port}`)
+                // Verificar que el RPC responda con un timeout
+                await Promise.race([
+                  testProvider.getBlockNumber(),
+                  new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+                ])
+                provider = testProvider
+                providerCreated = true
+                console.log(`✅ RPC local conectado en puerto ${port}`)
+                break
+              } catch (e) {
+                console.debug(`⚠️ RPC en puerto ${port} no disponible:`, e.message)
+                continue
+              }
+            }
+            
+            if (!providerCreated) {
+              throw new Error('No se pudo conectar a Ganache. Verifica que esté corriendo en el puerto 8546, 7545 o 8545.')
+            }
+          }
+          
+          // show provider info
+          try {
+            const network = await provider.getNetwork()
+            const chainId = network.chainId
+            document.getElementById('providerInfo').innerText = `Provider chain: ${chainId} ${useLocal ? '(local RPC)' : '(MetaMask)'} | Contrato: ${info.address.substring(0, 10)}...`
+          } catch (e) {
+            document.getElementById('providerInfo').innerText = 'Provider info not available'
+          }
+          
+          // verify contract is deployed at this address for the active provider
+          console.log('🔍 Verificando contrato en:', info.address, 'para cuenta:', address)
+          let code
+          try {
+            code = await Promise.race([
+              provider.getCode(info.address),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout obteniendo código')), 5000))
+            ])
+          } catch (e) {
+            console.error('Error al obtener código del contrato:', e)
+            throw new Error(`Error al verificar el contrato: ${e.message}`)
+          }
+          
+          const network = await provider.getNetwork().catch(() => ({ chainId: 'unknown' }))
+          console.log('📦 Código del contrato:', code === '0x' || code === '0x0' ? 'NO ENCONTRADO' : 'ENCONTRADO')
+          console.log('🌐 Network ID:', network.chainId, '| Artifact networkId:', info.networkId)
+          
+          if (code === '0x' || code === '0x0') {
+            // El contrato no está en esa dirección, intentar buscar en otras direcciones conocidas
+            let alternativeAddress = null
+            try {
+              // Intentar obtener la dirección desde el build artifact si está disponible
+              const buildRes = await fetch('/build/contracts/P2PPay.json').catch(() => null)
+              if (buildRes && buildRes.ok) {
+                const buildData = await buildRes.json()
+                const networks = buildData.networks || {}
+                // Buscar cualquier deployment en cualquier network
+                const networkKeys = Object.keys(networks)
+                if (networkKeys.length > 0) {
+                  // Buscar por chainId primero
+                  const networkByChainId = Object.values(networks).find(n => n && String(n.network_id) === String(network.chainId))
+                  if (networkByChainId && networkByChainId.address) {
+                    alternativeAddress = networkByChainId.address
+                  } else {
+                    // Tomar el último deployment
+                    const lastNetwork = networks[networkKeys[networkKeys.length - 1]]
+                    if (lastNetwork && lastNetwork.address) {
+                      alternativeAddress = lastNetwork.address
+                    }
+                  }
+                  
+                  if (alternativeAddress) {
+                    console.log('🔍 Dirección alternativa encontrada:', alternativeAddress)
+                    // Verificar si esta dirección tiene código
+                    const altCode = await provider.getCode(alternativeAddress)
+                    if (altCode !== '0x' && altCode !== '0x0') {
+                      console.log('✅ Contrato encontrado en dirección alternativa!')
+                      // Actualizar info.address para usar esta dirección
+                      info.address = alternativeAddress
+                      code = altCode
+                    } else {
+                      alternativeAddress = null
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              console.debug('No se pudo buscar dirección alternativa:', e)
+            }
+            
+            if (code === '0x' || code === '0x0') {
+              balanceDiv.innerHTML = `
+                <div style="color: #d32f2f; padding: 0.5rem; background: #ffebee; border-radius: 4px; margin-top: 0.5rem;">
+                  <strong>❌ Contrato no encontrado en esta red</strong><br>
+                  Dirección buscada: ${info.address}<br>
+                  Chain ID actual: ${network.chainId} | Artifact networkId: ${info.networkId}<br>
+                  <br>
+                  <strong>💡 Solución:</strong><br>
+                  1. Asegúrate de que Ganache esté corriendo: <code>npm run start-ganache</code><br>
+                  2. <strong>Despliega el contrato:</strong> <code>npm run build-and-export</code><br>
+                  3. Esto compilará, desplegará y actualizará el artifact del frontend<br>
+                  4. Recarga esta página después de desplegar
+                </div>
+              `
+              return null
+            }
+          }
+          
+          // Obtener el balance de ETH de la cuenta primero
+          console.log('📊 Consultando balance de ETH de la cuenta:', address)
+          let accountBalance
+          try {
+            accountBalance = await Promise.race([
+              provider.getBalance(address),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout consultando balance de cuenta')), 5000))
+            ])
+          } catch (err) {
+            console.warn('Error al obtener balance de cuenta:', err)
+            accountBalance = null
+          }
+          
+          // Si el contrato existe, obtener el balance en el contrato
+          console.log('📊 Consultando balance en contrato:', info.address)
+          const contract = new ethers.Contract(info.address, info.abi, provider)
+          
+          // Usar callStatic para evitar problemas con transacciones
+          let contractBalance
+          try {
+            contractBalance = await Promise.race([
+              contract.balanceOf(address),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout consultando balance del contrato')), 10000))
+            ])
+          } catch (callErr) {
+            console.error('Error al consultar balance del contrato:', callErr)
+            // Si es un error de JSON-RPC, mostrar mensaje más claro
+            if (callErr.message && (callErr.message.includes('Internal JSON-RPC error') || callErr.message.includes('JSON-RPC'))) {
+              throw new Error('Error de JSON-RPC: El contrato puede no estar desplegado en esta red o hay un problema de conexión. Intenta activar "Usar RPC local" o verifica que MetaMask esté conectado a la red correcta.')
+            }
+            throw callErr
+          }
+          
+          const accountBalanceEth = accountBalance ? ethers.utils.formatEther(accountBalance) : 'N/A'
+          const contractBalanceEth = ethers.utils.formatEther(contractBalance)
+          console.log('✅ Balance de cuenta:', accountBalanceEth, 'ETH | Balance en contrato:', contractBalanceEth, 'ETH')
+          
+          // Mostrar ambos balances
+          let balanceHtml = '<div style="margin-top: 0.5rem;">'
+          
+          // Balance de ETH de la cuenta
+          if (accountBalance !== null) {
+            balanceHtml += `
+              <div style="color: #1976d2; padding: 0.5rem; background: #e3f2fd; border-radius: 4px; margin-bottom: 0.5rem;">
+                <strong>💰 Balance de ETH (Ganache/MetaMask):</strong> ${accountBalanceEth} ETH
+              </div>
+            `
+          }
+          
+          // Balance en el contrato
+          balanceHtml += `
+            <div style="color: #2e7d32; padding: 0.5rem; background: #e8f5e9; border-radius: 4px;">
+              <strong>✓ Balance en contrato P2PPay:</strong> ${contractBalanceEth} ETH
+              <br><small style="color: #666;">Este es el balance depositado en el contrato, no el balance de ETH de la cuenta</small>
+            </div>
+          `
+          
+          balanceHtml += '</div>'
+          balanceDiv.innerHTML = balanceHtml
+          
+          return contractBalance
+        } catch (err) {
+          console.error('Error en refreshBalance:', err)
+          const errMessage = err.message || err.toString()
+          
+          // Manejar diferentes tipos de errores
+          if (err && err.code === 'CALL_EXCEPTION') {
+            balanceDiv.innerHTML = `
+              <div style="color: #d32f2f; padding: 0.5rem; background: #ffebee; border-radius: 4px; margin-top: 0.5rem;">
+                <strong>Error:</strong> Llamada a contrato falló (CALL_EXCEPTION)<br>
+                Verifica que MetaMask apunte a la red donde está desplegado el contrato o activa 'Usar RPC local'.
+              </div>
+            `
+          } else if (errMessage.includes('Internal JSON-RPC error') || errMessage.includes('JSON-RPC')) {
+            balanceDiv.innerHTML = `
+              <div style="color: #d32f2f; padding: 0.5rem; background: #ffebee; border-radius: 4px; margin-top: 0.5rem;">
+                <strong>Error: Internal JSON-RPC error</strong><br>
+                <br>
+                <strong>Posibles causas:</strong><br>
+                1. El contrato no está desplegado en esta red<br>
+                2. MetaMask no está conectado a la red correcta (Chain ID: 1337 para Ganache)<br>
+                3. Problema de conexión con el RPC<br>
+                <br>
+                <strong>💡 Soluciones:</strong><br>
+                1. Activa el checkbox "Usar RPC local (solo lectura)" para usar Ganache directamente<br>
+                2. Verifica que MetaMask esté conectado a la red Ganache (Chain ID: 1337)<br>
+                3. Asegúrate de que el contrato esté desplegado: <code>npm run build-and-export</code><br>
+                4. Verifica que Ganache esté corriendo: <code>npm run start-ganache</code>
+              </div>
+            `
+          } else if (errMessage.includes('No se pudo conectar')) {
+            balanceDiv.innerHTML = `
+              <div style="color: #d32f2f; padding: 0.5rem; background: #ffebee; border-radius: 4px; margin-top: 0.5rem;">
+                <strong>Error de conexión:</strong> ${errMessage}<br>
+                <strong>💡 Solución:</strong> Inicia Ganache con <code>npm run start-ganache</code>
+              </div>
+            `
+          } else {
+            balanceDiv.innerHTML = `
+              <div style="color: #d32f2f; padding: 0.5rem; background: #ffebee; border-radius: 4px; margin-top: 0.5rem;">
+                <strong>Error:</strong> ${errMessage}<br>
+                <small>Revisa la consola del navegador (F12) para más detalles.</small>
+              </div>
+            `
+          }
+          return null
+        }
+      }
+
+      btnConnect.addEventListener('click', updateAccount)
+      btnRefresh.addEventListener('click', () => refreshBalance(withdrawAddressInput.value))
+      
+      // Listener para cambio de cuenta en el selector
+      const accountSelect = document.getElementById('accountSelect')
+      if (accountSelect) {
+        accountSelect.addEventListener('change', async (e) => {
+          const selectedAddress = e.target.value
+          if (selectedAddress) {
+            await switchToAccount(selectedAddress)
+          }
+        })
+      }
+      
+      // Escuchar cambios de cuenta desde MetaMask
+      window.addEventListener('accountChanged', async (e) => {
+        const address = e.detail.address
+        await updateAccount()
+        // Actualizar el selector
+        if (accountSelect && address) {
+          accountSelect.value = address
+          updateAccountInfo()
+        }
+      })
+      
+      // Escuchar desconexión de MetaMask
+      window.addEventListener('accountDisconnected', () => {
+        accountDiv.innerText = 'MetaMask desconectado'
+        document.getElementById('accountSelectorContainer').style.display = 'none'
+        withdrawAddressInput.value = ''
+        btnWithdraw.disabled = true
+      })
+
+      btnPay.addEventListener('click', async () => {
+        btnPay.disabled = true
+        statusDiv.innerText = 'Enviando pago...'
+        try {
+          const payee = payeeInput.value
+          const amount = amountInput.value
+          const reference = refInput.value
+          
+          // Verificar que la cuenta seleccionada esté en MetaMask para firmar
+          const accountSelect = document.getElementById('accountSelect')
+          const selectedAddress = accountSelect.value
+          let metamaskAccounts = []
+          try {
+            metamaskAccounts = await P2P.getAllAccounts()
+          } catch (e) {
+            // Ignorar
+          }
+          
+          if (!metamaskAccounts.includes(selectedAddress)) {
+            throw new Error('Para enviar pagos, la cuenta debe estar importada en MetaMask. Importa la clave privada de Ganache en MetaMask.')
+          }
+          
+          await P2P.payTo(payee, amount, reference)
+          statusDiv.style.color = 'green'
+          statusDiv.innerText = 'Pago enviado exitosamente' 
+          await updateAccount()
+        } catch (err) {
+          statusDiv.style.color = 'red'
+          statusDiv.innerText = `Error: ${err.message}`
+        } finally { btnPay.disabled = false }
+      })
+
+      btnWithdraw.addEventListener('click', async () => {
+        btnWithdraw.disabled = true
+        statusDiv.innerText = 'Solicitando withdraw...'
+        try {
+          await P2P.withdraw()
+          statusDiv.innerText = 'Withdraw realizado'
+          await updateAccount()
+        } catch (err) {
+          statusDiv.innerText = `Error: ${err.message}`
+        } finally { btnWithdraw.disabled = false }
+      })
+
+      btnFundProject.addEventListener('click', async () => {
+        btnFundProject.disabled = true
+        statusDiv.innerText = 'Fundando wallet del proyecto...'
+        try {
+          const addr = projectWalletInput.value
+          const amt = projectAmountInput.value
+          const ref = projectRefInput.value
+          if (!addr || !amt) throw new Error('Project wallet y amount son requeridos')
+          if (window.P2P && typeof window.P2P.fundProjectWallet === 'function') {
+            await P2P.fundProjectWallet(addr, amt, ref)
+          } else if (window.P2P && typeof window.P2P.payTo === 'function') {
+            // fallback for older migrations or cached JS
+            console.warn('P2P.fundProjectWallet missing, using P2P.payTo fallback')
+            await P2P.payTo(addr, amt, ref)
+          } else {
+            throw new Error('P2P API not available')
+          }
+          statusDiv.innerText = 'Fondos del proyecto enviados (p2p)'
+          await updateAccount()
+        } catch (err) {
+          statusDiv.innerText = `Error: ${err.message}`
+        } finally { btnFundProject.disabled = false }
+      })
+
+      btnFundFromGanache.addEventListener('click', async () => {
+        btnFundFromGanache.disabled = true
+        statusDiv.innerText = 'Solicitando fondos desde Ganache...'
+        try {
+          // Target is currently the connect wallet address
+          const targetAddr = withdrawAddressInput.value
+          if (!targetAddr) throw new Error('Conecta MetaMask primero (Cuenta requerida)')
+          const amt = fundFromGanacheAmountInput.value || '1'
+          // Call fund server
+          const serverUrl = (window.fundServerBase || 'http://127.0.0.1:3001') + '/fund'
+          const res = await fetch(serverUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: targetAddr, amount: amt })
+          })
+          if (!res.ok) {
+            const err = await res.json().catch(()=>({error: 'unknown'}))
+            throw new Error(err.error || `Fund server responded with ${res.status}`)
+          }
+          const json = await res.json()
+          statusDiv.innerText = `Fondos enviados. TxHash: ${json.txHash}`
+          // refresh the UI balance after brief delay
+          setTimeout(()=> refreshBalance(targetAddr), 1200)
+        } catch (err) {
+          statusDiv.innerText = `Error al fundear: ${err.message}`
+        } finally { btnFundFromGanache.disabled = false }
+      })
+
+      // On load
+      window.addEventListener('load', () => {
+        // Debugging: show P2P object and whether fundProjectWallet is present
+        try {
+          console.log('P2P exported keys:', Object.keys(window.P2P || {}))
+          console.log('P2P.fundProjectWallet typeof:', typeof (window.P2P && window.P2P.fundProjectWallet))
+        } catch(e) { console.warn('Error inspecting window.P2P', e) }
+        // Polyfill fundProjectWallet if library version doesn't expose it. Run an immediate check plus a delayed one
+        const ensureFundProjectWallet = () => {
+          if (window.P2P && typeof window.P2P.fundProjectWallet !== 'function' && typeof window.P2P.payTo === 'function') {
+            window.P2P.fundProjectWallet = async (projectAddress, amountEther, reference) => {
+              console.warn('P2P.fundProjectWallet missing - falling back to payTo')
+              return window.P2P.payTo(projectAddress, amountEther, reference)
+            }
+          }
+        }
+        ensureFundProjectWallet()
+        setTimeout(ensureFundProjectWallet, 500)
+        // If MetaMask not installed, show installation hint
+        if (!window.ethereum) {
+            statusDiv.style.color = 'red'
+            statusDiv.innerText = 'MetaMask not found - instala MetaMask o usa una cuenta de Ganache para interactuar localmente.'
+            document.getElementById('metamaskHelp').style.display = 'block'
+          } else {
+          statusDiv.innerText = ''
+            document.getElementById('metamaskHelp').style.display = 'none'
+        }
+        loadContractInfo()
+        startFundServerPolling()
+      })
+      
+      // Limpiar intervalo al salir de la página
+      window.addEventListener('beforeunload', stopFundServerPolling)
+    </script>
+  </body>
+</html>

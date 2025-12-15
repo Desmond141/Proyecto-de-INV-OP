@@ -1,0 +1,33 @@
+{
+  "name": "proyecto-de-inv-op",
+  "version": "1.0.0",
+  "description": "REMIX DEFAULT WORKSPACE",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "npx truffle test tests/*.js --network ganache",
+    "export-frontend-artifact": "node scripts/export_frontend_artifact.js",
+    "build-and-export": "npx truffle compile && npx truffle migrate --network ganache --reset && node scripts/export_frontend_artifact.js",
+    "truffle-test": "npx truffle test tests/*.js --network ganache",
+    "fund": "npx truffle exec scripts/fund_account.js --network ganache --",
+    "fund-server": "node scripts/fund_server.js",
+    "start-ganache": "npx ganache -p 7545",
+    "ui": "npx http-server frontend -p 8080 -c-1 --cors",
+    "ganache-keys": "node scripts/get_ganache_keys.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.4.0",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "dotenv": "^16.1.4",
+    "web3": "^1.10.0",
+    "ethers": "^5.7.2",
+    "hardhat": "^3.1.0",
+    "solc": "^0.8.17"
+  }
+}
